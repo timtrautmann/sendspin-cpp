@@ -453,6 +453,10 @@ public:
     /// (SendspinClient::set_unpaired_access_enabled()).
     void apply_unpaired_access_change(bool enabled);
 
+    /// @brief Closes the activated connections without a long-term pairing when unpaired
+    /// sessions are switched off (SendspinClient::set_unpaired_sessions_allowed()).
+    void apply_unpaired_sessions_change(bool allowed);
+
     // ========================================
     // Protocol task: message handlers
     // ========================================
@@ -857,6 +861,12 @@ private:
     /// @param conn The connection to abort. Must be non-null.
     /// @param reason The abort reason to send.
     void local_abort_pairing(SendspinConnection* conn, PairAbortReason reason);
+
+    /// @brief Closes a connection unpaired sessions may no longer hold
+    /// (SendspinClient::set_unpaired_sessions_allowed()) with client/goodbye unauthorized, after
+    /// pair/abort user_cancelled when a pairing attempt is in flight on it.
+    /// @param conn The connection to close. Must be non-null.
+    void close_unpaired_session(SendspinConnection* conn);
 
     /// @brief End an attempt whose peer sent a pairing message out of sequence: close the
     /// connection without any application-level message and persist nothing

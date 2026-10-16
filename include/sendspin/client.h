@@ -671,6 +671,25 @@ public:
     /// @brief Whether unpaired access is on; see set_unpaired_access_enabled(). Any thread.
     bool is_unpaired_access_enabled() const;
 
+    /// @brief Sets whether a connection without a long-term pairing may activate at all.
+    ///
+    /// Off: a connection whose Noise handshake matched the Sentinel PSK or the Pairing PSK is
+    /// closed with client/goodbye unauthorized at its first server/activate, whatever activities
+    /// it declares, so it never competes for an admitted slot. Switching off closes such
+    /// connections that have already activated; a pairing still in flight gets pair/abort
+    /// user_cancelled first, and one whose pair-finalize was acked is left to its re-handshake.
+    /// Connections that matched a long-term record are never affected. On (the default) changes
+    /// nothing. Unlike set_unpaired_access_enabled() this is not advertised in client/hello.
+    ///
+    /// Any thread. A call before start() is stored and applies from the first connection. The
+    /// library never persists the setting.
+    /// @param allowed Whether unpaired sessions may activate.
+    void set_unpaired_sessions_allowed(bool allowed);
+
+    /// @brief Whether unpaired sessions may activate; see set_unpaired_sessions_allowed(). Any
+    /// thread.
+    bool is_unpaired_sessions_allowed() const;
+
     // ========================================
     // Listener and provider setters
     // ========================================
@@ -1071,6 +1090,9 @@ private:
     /// set_unpaired_access_enabled(). Written by the setter on any thread, read by the protocol
     /// task.
     std::atomic<bool> unpaired_access_enabled_{false};
+    /// Whether unpaired sessions may activate; see set_unpaired_sessions_allowed(). Written by
+    /// the setter on any thread, read by the protocol task.
+    std::atomic<bool> unpaired_sessions_allowed_{true};
     /// High-performance requests applied and not yet released. Main loop only.
     uint8_t high_performance_ref_count_{0};
     /// The network provider's last answer (poll_network_provider()). Written on the main loop by

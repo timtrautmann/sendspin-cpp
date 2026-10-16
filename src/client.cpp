@@ -1825,4 +1825,22 @@ bool SendspinClient::is_unpaired_access_enabled() const {
     return this->unpaired_access_enabled_.load(std::memory_order_acquire);
 }
 
+void SendspinClient::set_unpaired_sessions_allowed(bool allowed) {
+    if (this->unpaired_sessions_allowed_.exchange(allowed, std::memory_order_acq_rel) == allowed) {
+        return;
+    }
+    // Admission reads the flag at each server/activate. The activated connections a switch-off
+    // no longer fits are closed by the protocol task, which reads the flag when it applies the
+    // request, so a change and its reversal before that tick apply as the value they end on;
+    // with the client stopped there are none.
+    if (!this->is_started()) {
+        return;
+    }
+    this->protocol_task_->post_requests({.unpaired_sessions_changed = true});
+}
+
+bool SendspinClient::is_unpaired_sessions_allowed() const {
+    return this->unpaired_sessions_allowed_.load(std::memory_order_acquire);
+}
+
 }  // namespace sendspin

@@ -20,7 +20,8 @@ checklists in `.claude/skills/` apply these standards to a diff.
   state their writer and reader at their declaration). Any other thread
   reaches a connection only by queueing a `ProtocolCommand` or, for an
   idempotent latest-wins request (`connect_to()`, `disconnect()`, `leave()`,
-  the pairing-window gestures, an unpaired-access change), posting it to the
+  the pairing-window gestures, an unpaired-access or unpaired-sessions
+  change), posting it to the
   protocol task's request slot, which never refuses; a command that the full
   queue refuses is reported to the caller (`ControllerRole::send_command()`
   returns false) or

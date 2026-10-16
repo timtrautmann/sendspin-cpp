@@ -43,7 +43,7 @@ The primitives other than the Inbox and the inbound and outbound rings live in `
 | `InboundGate`, one per connection | The connection's transport: the fallback message in flight, the count of ring items not yet taken, the out-of-band close | The protocol task, which takes and consumes them and detaches the gate; the connection manager detaches it when the connection leaves it, from any thread |
 | `ProtocolTask` command queue (`ProtocolCommand`) | Transport threads (accepts of upgraded inbound connections, in slots reserved per socket); any thread (controller commands, in `CONSUMER_COMMAND_BURST` slots, the push past them refused, each stamped with the controller's teardown generation it was validated under and dropped by the task if a teardown has moved it on since) | The protocol task; at `stop()`, the joining thread for what the final tick left |
 | `ProtocolTask` state slot (`publish_state()`) | Main loop (`SendspinClient::publish_state()` and `start()`), latest-wins `client/state` | The protocol task |
-| `ProtocolTask` request slot (`post_requests()`, `LifecycleRequests`) | Any thread, latest-wins and never refused: `connect_to()` (the latest URL), `disconnect()` (the latest reason, and it drops a waiting `connect_to()`), `leave()`, the pairing-window gestures (the later of a confirm and a cancel), unpaired-access changes | The protocol task; at `stop()`, the joining thread for what the final tick left |
+| `ProtocolTask` request slot (`post_requests()`, `LifecycleRequests`) | Any thread, latest-wins and never refused: `connect_to()` (the latest URL), `disconnect()` (the latest reason, and it drops a waiting `connect_to()`), `leave()`, the pairing-window gestures (the later of a confirm and a cancel), unpaired-access and unpaired-sessions changes | The protocol task; at `stop()`, the joining thread for what the final tick left |
 | Role command bits (the sync task's `EventFlags`; the visualizer's and artwork's on their item list's flags, through `InboundItemList::signal()`) | The protocol task, or the main loop in `stop()` (`COMMAND_STOP`, `COMMAND_STREAM_END`, ...); the main loop (`COMMAND_START`) | The role's thread |
 | Sync-task stream ordinals (`SyncTask::started_ordinal_`, `ended_ordinal_`) | The main loop's start acknowledgement; the protocol task's stream end | Sync task (see [Stream End and Start](#stream-end-and-start)) |
 | Sync-task status bits (`TASK_RUNNING`, `TASK_IDLE`, `TASK_STOPPED` in its `EventFlags`) | Sync task | Main loop (`is_running()` gates a held STREAM_END), and the thread in `start()` waiting for IDLE |
@@ -54,7 +54,7 @@ The primitives other than the Inbox and the inbound and outbound rings live in `
 | Each connection's `SendspinTimeFilter` | Protocol task (its burst's measurements) | Sync task and visualizer drain thread, converting timestamps |
 | `RecordStore` | Protocol task (resolves and changes records) | Main loop (writes them to the provider) |
 
-Plain atomics carry the rest: the `connected_` flag on `ConnectionManager`; the admission flag `accepting_` on `ProtocolTask`, written on the main loop under the queue lock; the unpaired-access setting, the lifecycle state, the network provider's last answer (`network_ready_`, written by the main loop's poll and read by the protocol task before it starts the WebSocket server) and the high-performance grant count (`high_performance_granted_`, see [One Main Loop Drain](#one-main-loop-drain)) on `SendspinClient`; and each role's teardown generation (`cleanup_generation`), written by the protocol task and read by the main loop and the role's thread. The role- and connection-local atomics (a connection's last-arrival stamp, upgrade flag and time-frame write time; artwork's `stream_active` and slot epochs, the visualizer's `spectrum_bin_count`, `tracks_downbeats` and `boundary_sequence`, the player's output delay, the controller's supported commands, the source's stream gate and codec, the source task's overflow generation) each state their writer and reader at their declaration.
+Plain atomics carry the rest: the `connected_` flag on `ConnectionManager`; the admission flag `accepting_` on `ProtocolTask`, written on the main loop under the queue lock; the unpaired-access and unpaired-sessions settings, the lifecycle state, the network provider's last answer (`network_ready_`, written by the main loop's poll and read by the protocol task before it starts the WebSocket server) and the high-performance grant count (`high_performance_granted_`, see [One Main Loop Drain](#one-main-loop-drain)) on `SendspinClient`; and each role's teardown generation (`cleanup_generation`), written by the protocol task and read by the main loop and the role's thread. The role- and connection-local atomics (a connection's last-arrival stamp, upgrade flag and time-frame write time; artwork's `stream_active` and slot epochs, the visualizer's `spectrum_bin_count`, `tracks_downbeats` and `boundary_sequence`, the player's output delay, the controller's supported commands, the source's stream gate and codec, the source task's overflow generation) each state their writer and reader at their declaration.
 
 ### Locks
 
@@ -97,15 +97,16 @@ Every role state slot is a `GenerationSlot<T>`: each payload carries the stamp i
 
 ```api
 1. The lifecycle requests posted since the last tick (apply_lifecycle_requests()): an
-   unpaired-access change, the pairing-window gesture, leave, disconnect, then connect_to, all
-   dropped once admission is closed (a connect_to and a disconnect resolve by call order: one
-   posted after a disconnect is kept and applied after it, one before it is dropped); then the
-   commands, in queue order (handle_command()): accepts into the nursery, or refused with a
-   shutdown goodbye once admission is closed; controller commands, dropped once admission is
-   closed or when a teardown has moved the controller's generation past the stamp the command
-   was validated under. Requests go before the commands queued in the same window, so a send
-   queued before a disconnect finds its connection dropped, while an accept queued before it
-   still enters the nursery: a disconnect addresses the connections it finds, not a newcomer
+   unpaired-access change, an unpaired-sessions change, the pairing-window gesture, leave,
+   disconnect, then connect_to, all dropped once admission is closed (a connect_to and a
+   disconnect resolve by call order: one posted after a disconnect is kept and applied after it,
+   one before it is dropped); then the commands, in queue order (handle_command()): accepts into
+   the nursery, or refused with a shutdown goodbye once admission is closed; controller
+   commands, dropped once admission is closed or when a teardown has moved the controller's
+   generation past the stamp the command was validated under. Requests go before the commands
+   queued in the same window, so a send queued before a disconnect finds its connection dropped,
+   while an accept queued before it still enters the nursery: a disconnect addresses the
+   connections it finds, not a newcomer
 2. Once admission is closed: the shutdown pass (ConnectionManager::shutdown()), after the
    source's client-stream/end
 3. The newest client/state snapshot, sent to every admitted connection; its availability

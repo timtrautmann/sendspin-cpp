@@ -242,6 +242,8 @@ void ProtocolTask::post_requests(LifecycleRequests requests) {
         waiting.leave = waiting.leave || requests.leave;
         waiting.unpaired_access_changed =
             waiting.unpaired_access_changed || requests.unpaired_access_changed;
+        waiting.unpaired_sessions_changed =
+            waiting.unpaired_sessions_changed || requests.unpaired_sessions_changed;
     }
     this->wake();
 }
@@ -254,7 +256,7 @@ bool ProtocolTask::take_requests(LifecycleRequests& out) {
     }
     if (!taken.connect_to.has_value() && !taken.disconnect.has_value() &&
         taken.pairing_window == PairingWindowRequest::NONE && !taken.leave &&
-        !taken.unpaired_access_changed) {
+        !taken.unpaired_access_changed && !taken.unpaired_sessions_changed) {
         return false;
     }
     out = std::move(taken);

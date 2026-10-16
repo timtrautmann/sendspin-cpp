@@ -260,6 +260,10 @@ void SendspinClient::apply_lifecycle_requests(const LifecycleRequests& requests)
         manager.apply_unpaired_access_change(
             this->unpaired_access_enabled_.load(std::memory_order_acquire));
     }
+    if (requests.unpaired_sessions_changed) {
+        manager.apply_unpaired_sessions_change(
+            this->unpaired_sessions_allowed_.load(std::memory_order_acquire));
+    }
     switch (requests.pairing_window) {
         case PairingWindowRequest::NONE:
             break;

@@ -490,6 +490,10 @@ struct FakeEncryptedServerOptions {
     // (so its psk_id/category are resolved) and the hello exchange, but never proves itself, so
     // it stays in the nursery instead of being promoted.
     bool suppress_activate{false};
+    // How long the server waits after client/hello before it sends the FIRST server/activate.
+    // The wait runs on the fake's own thread, so the client keeps ticking: a test can act while
+    // the connection is handshaken but not yet activated, then watch that activation land.
+    uint32_t first_activate_delay_ms{0};
     // When true, client/pair-finalize is recorded but never acked, so the pairing attempt stays
     // in flight and the connection keeps the activation it was admitted on. Tests that need to
     // observe a connection mid-attempt set this; the pairing flows themselves leave it off.
@@ -840,6 +844,10 @@ private:
             }
             if (this->options_.suppress_activate) {
                 return;
+            }
+            if (this->options_.first_activate_delay_ms > 0) {
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(this->options_.first_activate_delay_ms));
             }
             if (this->options_.pre_activate_message.has_value()) {
                 // Ordered strictly before the activate on the same encrypted stream, so the DUT

@@ -116,6 +116,9 @@ struct LifecycleRequests {
     /// SendspinClient::set_unpaired_access_enabled(): apply the setting the client's flag holds
     /// when the task takes the request, which the call stored before posting.
     bool unpaired_access_changed{false};
+    /// SendspinClient::set_unpaired_sessions_allowed(): apply the setting the client's flag holds
+    /// when the task takes the request, which the call stored before posting.
+    bool unpaired_sessions_changed{false};
 };
 
 // ============================================================================

@@ -125,6 +125,12 @@ constexpr uint16_t UNPAIRED_TOGGLE_OUTBOUND_TEST_PORT = 19095;
 constexpr uint16_t UNPAIRED_TOGGLE_REKEY_TEST_PORT = 19096;
 constexpr uint16_t UNPAIRED_TOGGLE_STOPPED_TEST_PORT = 19097;
 constexpr uint16_t UNPAIRED_TOGGLE_NURSERY_PAIRING_TEST_PORT = 19098;
+constexpr uint16_t UNPAIRED_SESSIONS_REFUSED_TEST_PORT = 19210;
+constexpr uint16_t UNPAIRED_SESSIONS_PAIRING_PSK_TEST_PORT = 19211;
+constexpr uint16_t UNPAIRED_SESSIONS_TOGGLE_TEST_PORT = 19212;
+constexpr uint16_t UNPAIRED_SESSIONS_IN_FLIGHT_TEST_PORT = 19213;
+constexpr uint16_t UNPAIRED_SESSIONS_AFTER_PAIRING_TEST_PORT = 19214;
+constexpr uint16_t UNPAIRED_SESSIONS_NURSERY_TEST_PORT = 19215;
 
 // Starts with no pairing records (unpaired: only the Sentinel PSK resolves), but captures every
 // record persisted via save_blob() to a record slot key, so the pairing-flow test below
@@ -3810,4 +3816,236 @@ TEST(EncryptedLifecycle, UnpairedAccessIsOffUntilSetAndIsNeverPersisted) {
                     key == persistence_keys::LAST_PLAYED || is_record_key(key))
             << "unexpected persisted key " << key;
     }
+}
+
+// set_unpaired_sessions_allowed(false): a Sentinel session is closed at its first activation with
+// unauthorized, even an idle one that unpaired access does not gate, and never counts as connected.
+TEST(EncryptedLifecycle, RefusingUnpairedSessionsClosesAnIdleSentinelSessionAtActivation) {
+    TestNetworkProvider network;
+    InMemoryPersistenceProvider persistence;
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions Refused Test Client";
+    config.server_port = UNPAIRED_SESSIONS_REFUSED_TEST_PORT;
+
+    SendspinClient client(config);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    EXPECT_TRUE(client.is_unpaired_sessions_allowed());  // the default
+    client.set_unpaired_sessions_allowed(false);          // before start(), as the box does
+    EXPECT_FALSE(client.is_unpaired_sessions_allowed());
+    ASSERT_TRUE(client.start());
+
+    Identity identity = Identity::generate().value();
+    FakeEncryptedServerOptions idle;
+    idle.first_activities_json = R"([])";
+    idle.first_roles_json = R"([])";
+    FakeEncryptedServer stranger(server_url(UNPAIRED_SESSIONS_REFUSED_TEST_PORT),
+                                 std::string(NOISE_SUITE_CHACHAPOLY), identity,
+                                 std::string(SENTINEL_PSK_ID), SENTINEL_PSK, idle);
+    pump_until(client, [&] { return stranger.closed(); });
+    EXPECT_EQ(stranger.goodbye_reason(), std::optional<std::string>("unauthorized"));
+    EXPECT_FALSE(client.is_connected());
+
+    pump_for(client, 100);
+}
+
+// The same for a Pairing-PSK session that declares pairing: with unpaired sessions refused there is
+// no pairing at all.
+TEST(EncryptedLifecycle, RefusingUnpairedSessionsClosesAPairingPskSessionAtActivation) {
+    TestNetworkProvider network;
+    PairingCapturePersistenceProvider persistence;
+    const SendspinPairingPsk pairing_psk = seed_pairing_psk(persistence, 0xD3);
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions Pairing PSK Test Client";
+    config.server_port = UNPAIRED_SESSIONS_PAIRING_PSK_TEST_PORT;
+
+    SendspinClient client(config);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    client.set_unpaired_sessions_allowed(false);
+    ASSERT_TRUE(client.start());
+
+    Identity server_identity = Identity::generate().value();
+    FakeEncryptedServerOptions pairing_options;
+    pairing_options.first_activities_json = R"(["pairing"])";
+    pairing_options.first_roles_json = R"([])";
+    pairing_options.first_pairing_method = "pairing_psk";
+    pairing_options.psk_category = "pr";
+    FakeEncryptedServer pairing(server_url(UNPAIRED_SESSIONS_PAIRING_PSK_TEST_PORT),
+                                std::string(NOISE_SUITE_CHACHAPOLY), server_identity,
+                                pairing_psk.psk_id, pairing_psk.psk, pairing_options);
+    pump_until(client, [&] { return pairing.closed(); });
+    EXPECT_EQ(pairing.goodbye_reason(), std::optional<std::string>("unauthorized"));
+    EXPECT_FALSE(pairing.pair_init().has_value()) << "a refused session started pairing";
+    EXPECT_FALSE(persistence.captured_record().has_value());
+
+    pump_for(client, 100);
+}
+
+// Switching to refused drops an admitted Sentinel session with unauthorized; a paired session is
+// admitted while refused and survives every toggle.
+TEST(EncryptedLifecycle, RefusingUnpairedSessionsDropsAnAdmittedSentinelSessionAndKeepsAPairedOne) {
+    TestNetworkProvider network;
+    PairingCapturePersistenceProvider persistence;
+    Identity paired_identity = Identity::generate().value();
+    PairedPeer long_term_peer = make_paired_peer();
+    long_term_peer.record.server_id = paired_identity.peer_id();
+    persistence.set_seeded_long_term_record(long_term_peer.record);
+
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions Toggle Test Client";
+    config.server_port = UNPAIRED_SESSIONS_TOGGLE_TEST_PORT;
+    SendspinClient client(config);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    ASSERT_TRUE(client.start());
+
+    {
+        Identity stranger_identity = Identity::generate().value();
+        FakeEncryptedServerOptions idle;
+        idle.first_activities_json = R"([])";
+        idle.first_roles_json = R"([])";
+        FakeEncryptedServer stranger(server_url(UNPAIRED_SESSIONS_TOGGLE_TEST_PORT),
+                                     std::string(NOISE_SUITE_CHACHAPOLY), stranger_identity,
+                                     std::string(SENTINEL_PSK_ID), SENTINEL_PSK, idle);
+        pump_until(client, [&] { return client.is_connected(); });  // allowed: admitted
+
+        client.set_unpaired_sessions_allowed(false);
+        pump_until(client, [&] { return stranger.closed(); });
+        EXPECT_EQ(stranger.goodbye_reason(), std::optional<std::string>("unauthorized"));
+    }
+    pump_until(client, [&] { return !client.is_connected(); });
+
+    FakeEncryptedServer paired(server_url(UNPAIRED_SESSIONS_TOGGLE_TEST_PORT),
+                               std::string(NOISE_SUITE_CHACHAPOLY), paired_identity,
+                               long_term_peer.record.psk_id, long_term_peer.psk);
+    pump_until(client, [&] { return client.is_connected(); });  // refused, yet admitted: paired
+    client.set_unpaired_sessions_allowed(true);
+    client.set_unpaired_sessions_allowed(false);
+    // Must-not-happen window: a close would follow within a tick of either call.
+    pump_for(client, 300);
+    EXPECT_FALSE(paired.closed()) << "a paired session was closed by the unpaired-sessions setting";
+
+    client.disconnect(SendspinGoodbyeReason::SHUTDOWN);
+    pump_for(client, 100);
+}
+
+// Switching to refused mid-pairing aborts the attempt (pair/abort user_cancelled) and then closes
+// the session with unauthorized: closing the window ends pairing.
+TEST(EncryptedLifecycle, RefusingUnpairedSessionsAbortsAPairingInFlight) {
+    TestNetworkProvider network;
+    PairingCapturePersistenceProvider persistence;
+    const SendspinPairingPsk pairing_psk = seed_pairing_psk(persistence, 0xD4);
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions In Flight Test Client";
+    config.server_port = UNPAIRED_SESSIONS_IN_FLIGHT_TEST_PORT;
+    RecordingClientListener listener;
+    SendspinClient client(config);
+    client.set_listener(&listener);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    ASSERT_TRUE(client.start());
+
+    Identity server_identity = Identity::generate().value();
+    FakeEncryptedServerOptions pairing_options;
+    pairing_options.first_activities_json = R"(["pairing"])";
+    pairing_options.first_roles_json = R"([])";
+    pairing_options.first_pairing_method = "pairing_psk";
+    pairing_options.psk_category = "pr";
+    pairing_options.withhold_pair_finalize_ack = true;  // keeps the attempt in flight
+    FakeEncryptedServer pairing(server_url(UNPAIRED_SESSIONS_IN_FLIGHT_TEST_PORT),
+                                std::string(NOISE_SUITE_CHACHAPOLY), server_identity,
+                                pairing_psk.psk_id, pairing_psk.psk, pairing_options);
+    pump_until(client, [&] { return pairing.pair_init().has_value(); });
+
+    client.set_unpaired_sessions_allowed(false);
+    pump_until(client, [&] { return pairing.closed(); });
+    EXPECT_EQ(pairing.pair_abort_reasons(), std::vector<std::string>{"user_cancelled"});
+    EXPECT_EQ(pairing.goodbye_reason(), std::optional<std::string>("unauthorized"));
+    // The application hears the attempt end: the close that follows the abort must not swallow
+    // its on_pairing_failed.
+    pump_until(client, [&] { return listener.pairing_failed_reason().has_value(); });
+    EXPECT_EQ(listener.pairing_failed_reason(),
+              std::optional<SendspinPairAbortReason>(SendspinPairAbortReason::USER_CANCELLED));
+
+    pump_for(client, 100);
+}
+
+// The box refuses unpaired sessions from inside on_pairing_succeeded (its window closes on
+// success). The session that just paired is still on its Pairing PSK, waiting for its
+// re-handshake; it must not be dropped, and it must come back as USER.
+TEST(EncryptedLifecycle, LockingRightAfterPairingKeepsTheNewlyPairedSession) {
+    TestNetworkProvider network;
+    PairingCapturePersistenceProvider persistence;
+    const SendspinPairingPsk pairing_psk = seed_pairing_psk(persistence, 0xD5);
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions After Pairing Test Client";
+    config.server_port = UNPAIRED_SESSIONS_AFTER_PAIRING_TEST_PORT;
+
+    RecordingClientListener listener;
+    SendspinClient client(config);
+    listener.on_pairing_succeeded_hook = [&] { client.set_unpaired_sessions_allowed(false); };
+    client.set_listener(&listener);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    ASSERT_TRUE(client.start());
+
+    Identity server_identity = Identity::generate().value();
+    FakeEncryptedServerOptions options;
+    options.first_activities_json = R"(["pairing"])";
+    options.first_roles_json = R"([])";
+    options.first_pairing_method = "pairing_psk";
+    options.psk_category = "pr";
+    FakeEncryptedServer server(server_url(UNPAIRED_SESSIONS_AFTER_PAIRING_TEST_PORT),
+                               std::string(NOISE_SUITE_CHACHAPOLY), server_identity,
+                               pairing_psk.psk_id, pairing_psk.psk, options);
+    pump_until(client, [&] { return listener.pairing_succeeded_server_id().has_value(); });
+    EXPECT_FALSE(client.is_unpaired_sessions_allowed());
+    // Must-not-happen window: the switch-off would drop the session within a tick.
+    pump_for(client, 300);
+    EXPECT_FALSE(server.closed()) << "the newly paired session was dropped before its re-handshake";
+
+    auto learned_psk = server.learned_psk();
+    auto learned_psk_id = server.learned_psk_id();
+    ASSERT_TRUE(learned_psk.has_value() && learned_psk_id.has_value());
+    ASSERT_TRUE(server.trigger_rehandshake(learned_psk_id.value(), learned_psk.value()));
+    pump_until(client, [&] {
+        return listener.trust_ever_reached(ConnectionTrust::USER) && client.is_connected();
+    });
+    EXPECT_FALSE(server.closed());
+
+    client.disconnect(SendspinGoodbyeReason::SHUTDOWN);
+    pump_for(client, 100);
+}
+
+// A session that has not activated when the setting turns off is judged at its activation, not by
+// its category before then: a paired server's session is admitted.
+TEST(EncryptedLifecycle, RefusingUnpairedSessionsLeavesANotYetActivatedSessionToItsActivation) {
+    TestNetworkProvider network;
+    PairingCapturePersistenceProvider persistence;
+    Identity paired_identity = Identity::generate().value();
+    PairedPeer long_term_peer = make_paired_peer();
+    long_term_peer.record.server_id = paired_identity.peer_id();
+    persistence.set_seeded_long_term_record(long_term_peer.record);
+
+    SendspinClientConfig config;
+    config.name = "Unpaired Sessions Nursery Test Client";
+    config.server_port = UNPAIRED_SESSIONS_NURSERY_TEST_PORT;
+    SendspinClient client(config);
+    client.set_network_provider(&network);
+    client.set_persistence_provider(&persistence);
+    ASSERT_TRUE(client.start());
+
+    FakeEncryptedServerOptions slow;
+    slow.first_activate_delay_ms = 500;
+    FakeEncryptedServer paired(server_url(UNPAIRED_SESSIONS_NURSERY_TEST_PORT),
+                               std::string(NOISE_SUITE_CHACHAPOLY), paired_identity,
+                               long_term_peer.record.psk_id, long_term_peer.psk, slow);
+    pump_until(client, [&] { return paired.client_hello_count() > 0; });  // not yet activated
+    client.set_unpaired_sessions_allowed(false);
+    pump_until(client, [&] { return client.is_connected(); });
+    EXPECT_FALSE(paired.closed());
+
+    client.disconnect(SendspinGoodbyeReason::SHUTDOWN);
+    pump_for(client, 100);
 }

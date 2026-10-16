@@ -608,6 +608,51 @@ void ConnectionManager::apply_unpaired_access_change(bool enabled) {
     }
 }
 
+void ConnectionManager::apply_unpaired_sessions_change(bool allowed) {
+    if (allowed) {
+        return;  // nothing open was refused by the old value
+    }
+    // Only activated connections: one still awaiting its activation is judged by
+    // on_server_activate() against the new value. A connection whose pair-finalize was acked has
+    // its activation cleared and is about to re-handshake onto its new long-term PSK, so it is
+    // left to that; the pairing_finalized check states it outright.
+
+    // Collect first: drop_connection() edits the slots being walked.
+    InlineVector<std::shared_ptr<SendspinConnection>, MAX_OPEN_CONNECTIONS> doomed;
+    auto consider = [&](const std::shared_ptr<SendspinConnection>& conn) {
+        if (conn != nullptr && conn->first_activate_received() &&
+            conn->get_psk_category() != PskCategory::LONG_TERM && !conn->is_pairing_finalized()) {
+            doomed.push_back(conn);
+        }
+    };
+    for (const auto& entry : this->admitted_) {
+        consider(entry.conn);
+    }
+    for (const auto& entry : this->nursery_) {
+        consider(entry.conn);
+    }
+
+    for (const auto& conn : doomed) {
+        SS_LOGI(TAG, "Unpaired sessions refused: closing the session with server_id=%s",
+                conn->get_server_id().c_str());
+        this->close_unpaired_session(conn.get());
+    }
+}
+
+void ConnectionManager::close_unpaired_session(SendspinConnection* conn) {
+    if (!conn->is_pairing_in_progress()) {
+        this->drop_connection(conn, SendspinGoodbyeReason::UNAUTHORIZED);
+        return;
+    }
+    // Closing the window ends pairing: an attempt in flight hears pair/abort user_cancelled
+    // before the goodbye. One call does both, so the application's on_pairing_failed is queued
+    // after the teardown that would otherwise wipe it.
+    this->abort_pairing_attempt(conn, PairAbortReason::USER_CANCELLED,
+                                PairingDropAction::CLOSE_WITH_GOODBYE,
+                                to_public_abort_reason(PairAbortReason::USER_CANCELLED),
+                                SendspinGoodbyeReason::UNAUTHORIZED);
+}
+
 // ============================================================================
 // Protocol task: message handlers
 // ============================================================================
@@ -618,6 +663,21 @@ void ConnectionManager::on_server_activate(SendspinConnection* conn, ServerActiv
     if (nursery_entry == this->nursery_.end() && admitted_entry == nullptr) {
         // Released while its messages were still queued (a rejection, a reap).
         SS_LOGD(TAG, "Ignoring server/activate from a connection the manager released");
+        return;
+    }
+
+    // set_unpaired_sessions_allowed(false): only a connection that matched a long-term record may
+    // activate, whatever it declares. A connection that finished pairing re-handshakes onto its
+    // long-term PSK before its next activate, so it passes here.
+    if (!this->client_->unpaired_sessions_allowed_.load(std::memory_order_relaxed) &&
+        conn->get_psk_category() != PskCategory::LONG_TERM) {
+        SS_LOGW(TAG,
+                "server/activate refused: unpaired sessions are not allowed (psk_category=%d, "
+                "server_id=%s): closing with unauthorized",
+                static_cast<int>(conn->get_psk_category()), conn->get_server_id().c_str());
+        // An admitted connection mid-attempt (the switch-off not yet applied) ends the attempt
+        // as apply_unpaired_sessions_change() would.
+        this->close_unpaired_session(conn);
         return;
     }
 

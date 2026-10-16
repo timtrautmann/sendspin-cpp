@@ -1024,6 +1024,32 @@ A call on a running client applies the new value to the live connections as `pai
 Connections admitted with the Sentinel PSK report `ConnectionTrust::NONE`. Disabling
 unpaired access after the device is paired is the typical production configuration.
 
+### Unpaired Sessions
+
+Unpaired access gates what an unpaired server may declare; an idle or pairing unpaired
+connection is still admitted and holds a slot. A device that should answer only its paired
+servers turns unpaired sessions off:
+
+```cpp
+client.set_unpaired_sessions_allowed(false);
+bool allowed = client.is_unpaired_sessions_allowed();
+```
+
+While off, a connection whose Noise handshake matched the Sentinel PSK or the Pairing PSK is
+closed with `client/goodbye` reason `unauthorized` at its first `server/activate`, whatever
+activities it declares, so it never competes for an admitted slot and no pairing can start. It is
+on (today's behaviour) until turned off, is not advertised in `client/hello`, and the library
+never persists it. Like `set_unpaired_access_enabled()` it may be called from any thread at any
+time; a call before `start()` is stored and applies from the first connection.
+
+Turning it off on a running client closes every activated connection without a long-term record
+with `unauthorized`. A pairing attempt still in flight gets `pair/abort` `user_cancelled` first
+(and the application `on_pairing_failed`), while a connection whose `pair-finalize` the server
+already acked is left to its re-handshake onto the new long-term PSK, so turning it off from
+`on_pairing_succeeded()` keeps the server that just paired. A connection that has not activated
+yet is judged when its activation arrives. Paired connections are never affected, and turning
+it on changes nothing for open connections.
+
 ## Sending Commands
 
 If you added the controller role, use it to send playback commands. `send_command` takes a `ClientCommandControllerObject`, built with designated initializers - set only the field the command uses:
@@ -1054,7 +1080,7 @@ controller.send_command({.command = SendspinControllerCommand::SEEK_RELATIVE, .o
 
 Fields that do not match the command are ignored when the message is serialized. The client drops, with a warning, a command missing from the latest controller state's `supported_commands`, and one without the field it requires (`volume` in 0-100, `muted`, `position_ms`, `offset_ms`); gate your UI on `supported_commands` so such calls are not made. The server clamps seeks to the seekable range.
 
-A command is sent only to the admitted connection that owns the controller role, and only while the server has `controller@v1` among that connection's active roles. Calls made before the first `server/activate`, or after one that removes the role, are dropped rather than queued. `send_command()` checks the command against `supported_commands` and its parameter on the calling thread, then queues the command itself to the protocol task, which formats the `client/command`, applies the gate and sends it. A command validated against an owner that was replaced before the protocol task handled it is dropped there, since the new owner never offered it. It returns `false` for a command it drops itself (not in `supported_commands`, or a missing parameter) and when the request never reached the task: the client is not running, or the request queue is full. The queue holds a small fixed burst of controller commands (eight; `connect_to()`, `disconnect()`, `leave()`, the pairing-window gestures and unpaired-access changes never take a slot and are never refused), so a control that fires faster than the protocol task drains it, such as a rotary encoder sending a volume step per detent, sees `send_command()` return `false` and should coalesce and retry. A `false` for an unsupported command or a missing parameter is not one a retry can fix: retry only on a full queue, and gate the UI on `supported_commands` for the rest. `true` means queued, not sent.
+A command is sent only to the admitted connection that owns the controller role, and only while the server has `controller@v1` among that connection's active roles. Calls made before the first `server/activate`, or after one that removes the role, are dropped rather than queued. `send_command()` checks the command against `supported_commands` and its parameter on the calling thread, then queues the command itself to the protocol task, which formats the `client/command`, applies the gate and sends it. A command validated against an owner that was replaced before the protocol task handled it is dropped there, since the new owner never offered it. It returns `false` for a command it drops itself (not in `supported_commands`, or a missing parameter) and when the request never reached the task: the client is not running, or the request queue is full. The queue holds a small fixed burst of controller commands (eight; `connect_to()`, `disconnect()`, `leave()`, the pairing-window gestures, unpaired-access and unpaired-sessions changes never take a slot and are never refused), so a control that fires faster than the protocol task drains it, such as a rotary encoder sending a volume step per detent, sees `send_command()` return `false` and should coalesce and retry. A `false` for an unsupported command or a missing parameter is not one a retry can fix: retry only on a full queue, and gate the UI on `supported_commands` for the rest. `true` means queued, not sent.
 
 ## Accessing Roles
 
@@ -1194,13 +1220,15 @@ also called on the main loop only, from `start()` and `loop()`, and must be chea
 non-blocking.
 
 Callable from any thread: `connect_to()`, `disconnect()`, `leave()`,
-`confirm_pairing_window()`, `cancel_pairing_window()`, `set_unpaired_access_enabled()` and the
-getters `is_started()`, `is_connected()`, `is_time_synced()`, `get_client_time()`,
-`get_server_information()` and `is_unpaired_access_enabled()`. The
+`confirm_pairing_window()`, `cancel_pairing_window()`, `set_unpaired_access_enabled()`,
+`set_unpaired_sessions_allowed()` and the getters `is_started()`, `is_connected()`,
+`is_time_synced()`, `get_client_time()`, `get_server_information()`,
+`is_unpaired_access_enabled()` and `is_unpaired_sessions_allowed()`. The
 requests take effect on the protocol task's next tick; the getters read what that task last
 published. Controller commands are queued, so a burst of them can fill the
 queue (see [Sending Commands](#sending-commands)); `connect_to()`, `disconnect()`, `leave()`,
-the pairing-window gestures and `set_unpaired_access_enabled()` are posted instead, never
+the pairing-window gestures, `set_unpaired_access_enabled()` and
+`set_unpaired_sessions_allowed()` are posted instead, never
 refused, and each holds only its latest call (the latest URL, the latest disconnect reason, the
 later of a confirm and a cancel). A `connect_to()` and a `disconnect()` resolve by call order: a
 `connect_to()` after a `disconnect()` opens the new attempt once the goodbyes are sent, and a
