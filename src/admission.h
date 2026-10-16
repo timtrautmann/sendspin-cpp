@@ -195,6 +195,8 @@ inline int activity_rank(const std::vector<SendspinActivity>& activities) {
 ///   2. An admitted connection with an in-flight pairing, alone or alongside playback, is not
 ///      displaced by incoming rank 1 or 2.
 ///   3. Higher incoming rank displaces.
+///   3a. At equal rank, a long-term (paired) connection displaces a non-long-term one, and a
+///       non-long-term one never displaces a long-term one.
 ///   4. Equal non-zero rank -> admit.
 ///   5. Both rank-0 (empty activities): admit only if
 ///      incoming.server_id == last_playback_server_id && admitted.server_id != last_playback.
@@ -203,13 +205,17 @@ inline int activity_rank(const std::vector<SendspinActivity>& activities) {
 ///        in flight. True is the plain reading of rule 2. Pass false only when the admitted side
 ///        declares PAIRING but has already been acked with server/pair-finalize, so rule 2 stops
 ///        shielding a pairing that has finished.
+/// @param incoming_long_term  Whether the incoming connection's handshake matched a long-term
+///        pairing record (PskCategory::LONG_TERM).
+/// @param admitted_long_term  The same for the admitted connection.
 /// @return true if the incoming connection should become the admitted one.
 inline bool should_admit_connection(const std::vector<SendspinActivity>& incoming_activities,
                                     const std::string& incoming_server_id,
                                     const std::vector<SendspinActivity>& admitted_activities,
                                     const std::string& admitted_server_id, bool has_admitted,
                                     const std::optional<std::string>& last_playback_server_id,
-                                    bool admitted_pairing_in_flight) {
+                                    bool admitted_pairing_in_flight, bool incoming_long_term,
+                                    bool admitted_long_term) {
     if (!has_admitted) {
         return true;
     }
@@ -228,6 +234,12 @@ inline bool should_admit_connection(const std::vector<SendspinActivity>& incomin
 
     if (incoming_rank != admitted_rank) {
         return incoming_rank > admitted_rank;
+    }
+
+    // Rule 3a: between equal ranks, trust decides before the last-playback tiebreak, so a
+    // server without a pairing can never hold the slot against the paired one.
+    if (incoming_long_term != admitted_long_term) {
+        return incoming_long_term;
     }
 
     if (incoming_rank == 0) {

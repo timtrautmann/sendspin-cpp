@@ -1645,7 +1645,7 @@ void ConnectionManager::drop_connection(SendspinConnection* conn,
 
 bool ConnectionManager::should_switch_to_new_server(const SendspinConnection* admitted,
                                                     const SendspinConnection* new_conn) const {
-    // Applies admission.h::should_admit_connection (activity-priority arbitration). `admitted`
+    // Applies admission.h::should_admit_connection (activity-priority arbitration, then trust at equal rank). `admitted`
     // may be null (nothing to displace); the pure function's has_admitted=false path always
     // admits.
     const bool has_admitted = admitted != nullptr;
@@ -1661,7 +1661,10 @@ bool ConnectionManager::should_switch_to_new_server(const SendspinConnection* ad
         /*admitted_server_id=*/has_admitted ? admitted->get_server_id() : std::string{},
         /*has_admitted=*/has_admitted,
         /*last_playback_server_id=*/this->last_played_server_id_,
-        /*admitted_pairing_in_flight=*/pairing_in_flight);
+        /*admitted_pairing_in_flight=*/pairing_in_flight,
+        /*incoming_long_term=*/new_conn->get_psk_category() == PskCategory::LONG_TERM,
+        /*admitted_long_term=*/
+        has_admitted && admitted->get_psk_category() == PskCategory::LONG_TERM);
 }
 
 void ConnectionManager::note_playback_activity(const SendspinConnection* conn) {

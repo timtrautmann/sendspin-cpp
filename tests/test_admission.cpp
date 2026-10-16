@@ -281,9 +281,11 @@ TEST(ActivityRank, HighestDeclaredActivityWins) {
 static bool admit(const Acts& incoming_acts, const std::string& incoming_id,
                   const Acts& admitted_acts, const std::string& admitted_id, bool has_admitted,
                   const std::optional<std::string>& last_playback = std::nullopt,
-                  bool admitted_pairing_in_flight = true) {
+                  bool admitted_pairing_in_flight = true, bool incoming_long_term = true,
+                  bool admitted_long_term = true) {
     return should_admit_connection(incoming_acts, incoming_id, admitted_acts, admitted_id,
-                                   has_admitted, last_playback, admitted_pairing_in_flight);
+                                   has_admitted, last_playback, admitted_pairing_in_flight,
+                                   incoming_long_term, admitted_long_term);
 }
 
 // Rules 1-4 of connection.md "Multiple servers (server-initiated)": no incumbent, the in-flight
@@ -367,10 +369,14 @@ TEST(ShouldAdmitConnection, FinalizedPairingNoLongerBlocksHigherRankedIncoming) 
     const Acts admitted{SendspinActivity::PAIRING};   // rank 1
 
     EXPECT_FALSE(should_admit_connection(incoming, "server-new", admitted, "server-pairing", true,
-                                         std::nullopt, /*admitted_pairing_in_flight=*/true))
+                                         std::nullopt, /*admitted_pairing_in_flight=*/true,
+                                         /*incoming_long_term=*/true,
+                                         /*admitted_long_term=*/true))
         << "a pairing still in flight must not be displaced";
     EXPECT_TRUE(should_admit_connection(incoming, "server-new", admitted, "server-pairing", true,
-                                        std::nullopt, /*admitted_pairing_in_flight=*/false))
+                                        std::nullopt, /*admitted_pairing_in_flight=*/false,
+                                        /*incoming_long_term=*/true,
+                                        /*admitted_long_term=*/true))
         << "a pairing that already finalized must not keep blocking a rank-2 incoming";
 }
 
@@ -385,9 +391,49 @@ TEST(ShouldAdmitConnection, FinalizedPairingIsNotEvictedByRankZeroLastPlaybackPe
     // "server-old" is the last playback server, which is exactly the input rule 5 keys on.
     EXPECT_FALSE(should_admit_connection(incoming, "server-old", admitted, "server-paired", true,
                                          "server-old",
-                                         /*admitted_pairing_in_flight=*/false))
+                                         /*admitted_pairing_in_flight=*/false,
+                                         /*incoming_long_term=*/true,
+                                         /*admitted_long_term=*/true))
         << "a rank-0 peer must not displace a rank-1 connection, finalized or not: rank still "
            "decides, and rule 5 applies only when BOTH sides are rank 0";
+}
+
+// Trust at equal rank: a paired (long-term) session displaces an unpaired one (Sentinel or Pairing
+// PSK), and an unpaired one never displaces a paired one, the last-playback tiebreak included.
+// Rank still beats trust, and two sessions of the same trust keep the rules above.
+TEST(ShouldAdmitConnection, PairedTrustDecidesBetweenEqualRanks) {
+    struct Row {
+        const char* name;
+        Acts incoming;
+        bool incoming_long_term;
+        Acts admitted;
+        bool admitted_long_term;
+        std::optional<std::string> last_playback;
+        bool expected;
+    };
+    const Row rows[] = {
+        {"rank0/paired-vs-unpaired", Acts{}, true, Acts{}, false, std::nullopt, true},
+        {"rank0/unpaired-vs-paired", Acts{}, false, Acts{}, true, std::nullopt, false},
+        {"rank0/unpaired-last-playback-vs-paired", Acts{}, false, Acts{}, true, "server-new",
+         false},
+        {"rank2/paired-vs-unpaired", Acts{PB}, true, Acts{PB}, false, std::nullopt, true},
+        {"rank2/unpaired-vs-paired", Acts{PB}, false, Acts{PB}, true, std::nullopt, false},
+        // Control: rank beats trust.
+        {"rank1-unpaired-vs-rank0-paired", Acts{PR}, false, Acts{}, true, std::nullopt, true},
+        {"rank0-paired-vs-rank1-unpaired", Acts{}, true, Acts{PR}, false, std::nullopt, false},
+        // Control: same trust, existing rules.
+        {"rank0/both-paired-no-last", Acts{}, true, Acts{}, true, std::nullopt, false},
+        {"rank0/both-unpaired-no-last", Acts{}, false, Acts{}, false, std::nullopt, false},
+        {"rank0/both-paired-incoming-last", Acts{}, true, Acts{}, true, "server-new", true},
+    };
+    for (const Row& row : rows) {
+        SCOPED_TRACE(row.name);
+        EXPECT_EQ(admit(row.incoming, "server-new", row.admitted, "server-old",
+                        /*has_admitted=*/true, row.last_playback,
+                        /*admitted_pairing_in_flight=*/false, row.incoming_long_term,
+                        row.admitted_long_term),
+                  row.expected);
+    }
 }
 
 // ============================================================================
